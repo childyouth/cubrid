@@ -4874,8 +4874,12 @@ pt_get_all_attributes_and_types (PARSER_CONTEXT * parser, PT_NODE * cls, PT_NODE
       att = (DB_ATTRIBUTE *) db_get_attributes_force (object);
     }
 
+  bool is_first_col_invisible = false;
   if (att != NULL)
     {
+      /* if the column that make result anchor is invisible, remove the column after building anchor */
+      is_first_col_invisible = db_attribute_is_invisible_column (att);
+
       /* make result anchor the list */
       result = tail = pt_name (parser, db_attribute_name (att));
       if (result == NULL)
@@ -4905,6 +4909,13 @@ pt_get_all_attributes_and_types (PARSER_CONTEXT * parser, PT_NODE * cls, PT_NODE
       /* for the rest of the attributes do */
       while (att != NULL)
 	{
+	  /* if column is invisible, skip it */
+	  if (db_attribute_is_invisible_column (att))
+	    {
+	      att = db_attribute_next (att);
+	      continue;
+	    }
+
 	  /* make new node & copy attribute name into it */
 	  node = pt_name (parser, db_attribute_name (att));
 	  if (node == NULL)
@@ -4935,6 +4946,11 @@ pt_get_all_attributes_and_types (PARSER_CONTEXT * parser, PT_NODE * cls, PT_NODE
 	  /* advance to next attribute */
 	  att = db_attribute_next (att);
 	}
+    }
+
+  if (is_first_col_invisible)
+    {
+      result = result->next;
     }
 
   return result;
