@@ -68,11 +68,19 @@ struct val_descr
   int dbval_cnt;		/* Value Count */
   DB_DATETIME sys_datetime;
   DB_TIMESTAMP sys_epochtime;
-  int sys_epochtime_ms;		/* Epoch time in milliseconds for UUIDv7 [0~1000) */
   long lrand;
   double drand;
   XASL_STATE *xasl_state;	/* XASL_STATE pointer */
 };				/* Value Descriptor */
+
+// XASL_STATE
+typedef struct xasl_state XASL_STATE;
+struct xasl_state
+{
+  VAL_DESCR vd;			/* Value Descriptor */
+  QUERY_ID query_id;		/* Query associated with XASL */
+  int qp_xasl_line;		/* Error line */
+};
 
 extern qfile_list_id *qexec_execute_query (THREAD_ENTRY * thread_p, xasl_node * xasl, int dbval_cnt,
 					   const DB_VALUE * dbval_ptr, QUERY_ID query_id);
@@ -109,4 +117,6 @@ extern int qexec_insert_tuple_into_list (THREAD_ENTRY * thread_p, qfile_list_id 
 					 valptr_list_node * outptr_list, val_descr * vd, qfile_tuple_record * tplrec);
 extern void qexec_replace_prior_regu_vars_prior_expr (THREAD_ENTRY * thread_p, regu_variable_node * regu,
 						      xasl_node * xasl, xasl_node * connect_by_ptr);
+extern SCAN_CODE qexec_execute_scan_ptr (THREAD_ENTRY * thread_p, xasl_node * xasl, XASL_STATE * xasl_state,
+					 void *scan_func_ptr);
 #endif /* _QUERY_EXECUTOR_H_ */

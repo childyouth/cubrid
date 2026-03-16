@@ -26228,7 +26228,6 @@ db_uuidv4 (THREAD_ENTRY * thread_p, DB_VALUE * result)
   int i = 0, error_code = NO_ERROR;
   const char hex_digit[] = "0123456789ABCDEF";
   unsigned char guid_bytes[GUID_STANDARD_BYTES_LENGTH];
-
   char *guid_hex = NULL;
 
   if (result == NULL)
@@ -26269,7 +26268,6 @@ db_uuidv4 (THREAD_ENTRY * thread_p, DB_VALUE * result)
   return NO_ERROR;
 
 error:
-  db_make_null (result);
   if (prm_get_bool_value (PRM_ID_RETURN_NULL_ON_FUNCTION_ERRORS))
     {
       er_clear ();
@@ -26288,7 +26286,7 @@ error:
  *   result(out): BIT(128) DB_VALUE
  * Note:
  *   For UUIDv7, epoch_ms should be calculated from val_descr as:
- *   epoch_ms = (uint64_t)vd->sys_epochtime * 1000 + (uint64_t)vd->sys_epochtime_ms
+ *   epoch_ms = (uint64_t)vd->sys_epochtime * 1000 + (uint64_t)vd->sys_datetime.time % 1000
  */
 int
 db_uuid_bin (THREAD_ENTRY * thread_p, UUID_VERSION version, uint64_t epoch_ms, DB_VALUE * result)
@@ -26320,6 +26318,7 @@ db_uuid_bin (THREAD_ENTRY * thread_p, UUID_VERSION version, uint64_t epoch_ms, D
     case UUID_V7:
       error_code = uuidv7_generate_bytes (thread_p, epoch_ms, (unsigned char *) guid_bytes);
       break;
+    case UUID_UNSUPPORTED:
     default:
       error_code = ER_OBJ_INVALID_ARGUMENTS;
       er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, error_code, 0);
@@ -26337,7 +26336,6 @@ db_uuid_bin (THREAD_ENTRY * thread_p, UUID_VERSION version, uint64_t epoch_ms, D
   return NO_ERROR;
 
 error:
-  db_make_null (result);
   if (guid_bytes != NULL)
     {
       db_private_free (thread_p, guid_bytes);
@@ -26382,6 +26380,10 @@ uuidv7_generate_bytes (THREAD_ENTRY * thread_p, uint64_t xasl_vd_epoch_ms, unsig
   /* Load per-thread UUIDv7 state */
   thread_get_uuidv7_state (thread_p, &last_ms, &seq);
 
+  /* If the type of `seq` changes or if its maximum allowable value is modified 
+   * uuidv7_generate_bytes logics must be updated accordingly */
+  assert (seq <= GUID_V7_SEQ_MAX);
+
   if (xasl_vd_epoch_ms > last_ms)
     {
       /* New millisecond: reset sequence */
@@ -26399,11 +26401,13 @@ uuidv7_generate_bytes (THREAD_ENTRY * thread_p, uint64_t xasl_vd_epoch_ms, unsig
        * Increment sequence to ensure uniqueness within the same effective timestamp
        */
       seq++;
-      if (seq > GUID_V7_SEQ_MAX || seq == 0)
+      if (seq == 0)
 	{
-	  /* Sequence overflow: advance timestamp by 1ms to preserve monotonicity */
+	  /* Sequence overflow
+	   *   (seq is uint8_t and GUID_V7_SEQ_MAX represents maximum value of an 8-bit)
+	   *   : advance timestamp by 1ms to preserve monotonicity 
+	   */
 	  last_ms++;
-	  seq = 0;
 	}
     }
 

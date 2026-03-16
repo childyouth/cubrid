@@ -8080,8 +8080,7 @@ pt_to_regu_variable (PARSER_CONTEXT * parser, PT_NODE * node, UNBOX unbox)
 		       || node->info.expr.op == PT_UTC_TIME || node->info.expr.op == PT_UTC_DATE
 		       || node->info.expr.op == PT_PI || node->info.expr.op == PT_LOCAL_TRANSACTION_ID
 		       || node->info.expr.op == PT_ROW_COUNT || node->info.expr.op == PT_LIST_DBS
-		       || node->info.expr.op == PT_SYS_GUID
-		       || node->info.expr.op == PT_LAST_INSERT_ID
+		       || node->info.expr.op == PT_SYS_GUID || node->info.expr.op == PT_LAST_INSERT_ID
 		       || node->info.expr.op == PT_DBTIMEZONE || node->info.expr.op == PT_SESSIONTIMEZONE
 		       || node->info.expr.op == PT_UTC_TIMESTAMP)
 		{
@@ -14793,6 +14792,14 @@ pt_gen_optimized_plan (PARSER_CONTEXT * parser, PT_NODE * select_node, QO_PLAN *
 		    {
 		      ptr->spec_list->s.list_node.hash_list_scan_yn = 0;
 		    }
+		}
+	    }
+
+	  if (select_node->info.query.q.select.hint & PT_HINT_NLJ_KEEP_HEAP_PAGE_PINNED)
+	    {
+	      if (xasl->spec_list)
+		{
+		  ACCESS_SPEC_SET_FLAG (xasl->spec_list, ACCESS_SPEC_FLAG_FORCE_FIXED_SCAN);
 		}
 	    }
 	}
