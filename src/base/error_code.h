@@ -1763,7 +1763,9 @@
 
 #define ER_INVALID_SCALE                            -1373
 
-#define ER_LAST_ERROR                               -1374
+#define ER_QSTR_INVALID_UUID_FORMAT                 -1374
+
+#define ER_LAST_ERROR                               -1375
 
 
 
