@@ -1987,6 +1987,8 @@ $set 8 MSGCAT_SET_PARSER_SEMANTIC
 336 Numeric scale specifier is out of range -84 to 127
 
 337 DEFAULT UUID only supports UUID(), UUID(4), or UUID(7).
+338 Invalid DEFAULT clause: '%1$s' has unclassified volatility.
+
 
 
 

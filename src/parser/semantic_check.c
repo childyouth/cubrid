@@ -4049,22 +4049,23 @@ pt_default_expr_normalized_text (PARSER_CONTEXT * parser, PT_NODE * node)
       printed++;
       len--;
     }
-
-  result = pt_append_string (parser, NULL, "(");
-  result = pt_append_string (parser, result, printed);
-  while (result != NULL)
+  while (len > 0 && char_isspace (printed[len - 1]))
     {
-      len = strlen (result);
-      if (len > 1 && char_isspace (result[len - 1]))
-	{
-	  result[len - 1] = '\0';
-	}
-      else
-	{
-	  break;
-	}
+      len--;
     }
-  result = pt_append_string (parser, result, ")");
+
+  /* build "(trimmed)" in one allocation; in-place truncation of a string from
+   * pt_append_string desynchronizes the parser string block's end offset, so a
+   * later append would land after the embedded terminator and be lost */
+  result = (char *) parser_allocate_string_buffer (parser, len + 2, sizeof (char));
+  if (result == NULL)
+    {
+      return NULL;
+    }
+  result[0] = '(';
+  memcpy (result + 1, printed, len);
+  result[len + 1] = ')';
+  result[len + 2] = '\0';
   return result;
 }
 
@@ -4148,6 +4149,14 @@ pt_check_data_default (PARSER_CONTEXT * parser, PT_NODE * data_default_list)
 	       * + REGU stream) for once-per-statement evaluation. */
 	      is_stable_residual = true;
 	      edl_text = pt_default_expr_normalized_text (parser, default_value);
+	    }
+	  else if (vol == PT_VOLATILITY_UNSET)
+	    {
+	      /* The expression tree contains operators/functions whose volatility
+	       * has not been classified.  Reject it so that unclassified DEFAULT
+	       * expressions do not silently bypass the nested-expression check.
+	       * Errors are already reported by pt_get_expr_tree_volatility. */
+	      goto end;
 	    }
 	}
 

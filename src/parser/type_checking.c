@@ -312,7 +312,12 @@ pt_get_op_volatility (PT_OP_TYPE op)
 
   if (!pt_get_expression_definition (op, &def) || def.overloads_count <= 0)
     {
-      return PT_VOLATILITY_UNSET;
+      switch(op){
+        case PT_CAST:
+          return PT_VOLATILITY_IMMUTABLE;
+        default:
+          return PT_VOLATILITY_UNSET;
+      }
     }
   return def.overloads[0].volatility;
 }
@@ -356,7 +361,7 @@ pt_get_expr_tree_volatility (PARSER_CONTEXT * parser, PT_NODE * node)
       v = pt_volatility_max (v, pt_get_expr_tree_volatility (parser, node->info.expr.arg1));
       v = pt_volatility_max (v, pt_get_expr_tree_volatility (parser, node->info.expr.arg2));
       v = pt_volatility_max (v, pt_get_expr_tree_volatility (parser, node->info.expr.arg3));
-      return v;
+      goto end;
 
     case PT_FUNCTION:
       {
@@ -367,14 +372,23 @@ pt_get_expr_tree_volatility (PARSER_CONTEXT * parser, PT_NODE * node)
 	  {
 	    v = pt_volatility_max (v, pt_get_expr_tree_volatility (parser, arg));
 	  }
-	return v;
+    goto end;
       }
 
     default:
       /* names (column refs), host vars, sub-queries: not classified for DEFAULT
        * folding in this scope */
-      return PT_VOLATILITY_UNSET;
+      v = PT_VOLATILITY_UNSET;
+      goto end;
     }
+
+end:
+    if (v == PT_VOLATILITY_UNSET){
+      PT_ERRORmf (parser, node, MSGCAT_SET_PARSER_SEMANTIC,
+		  MSGCAT_SEMANTIC_DEFAULT_UNCLASSIFIED_VOLATILITY,
+		  pt_show_node_type (node));
+    }
+      return v;
 }
 
 /*
