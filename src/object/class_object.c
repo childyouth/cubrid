@@ -4966,17 +4966,7 @@ classobj_clear_attribute (SM_ATTRIBUTE * att)
   classobj_clear_attribute_value (&att->default_value.value);
   classobj_clear_attribute_value (&att->default_value.original_value);
 
-  if (att->default_value.default_expr.default_expr_format)
-    {
-      ws_free_string (att->default_value.default_expr.default_expr_format);
-      att->default_value.default_expr.default_expr_format = NULL;
-    }
-
-  if (att->default_value.default_expr.default_expr_text)
-    {
-      ws_free_string (att->default_value.default_expr.default_expr_text);
-      att->default_value.default_expr.default_expr_text = NULL;
-    }
+  classobj_clear_default_expr (&att->default_value.default_expr);
 
   att->header.name = NULL;
 
@@ -8781,6 +8771,41 @@ error:
 }
 
 /*
+ * classobj_clear_default_expr() - Frees the workspace storage owned by a
+ *    default expression and re-initializes it.
+ *    return: nothing
+ *
+ *   default_expr(in/out): default expression
+ */
+void
+classobj_clear_default_expr (DB_DEFAULT_EXPR * default_expr)
+{
+  assert (default_expr != NULL);
+
+  if (default_expr->default_expr_format)
+    {
+      ws_free_string (default_expr->default_expr_format);
+    }
+
+  if (default_expr->default_expr_text)
+    {
+      ws_free_string (default_expr->default_expr_text);
+    }
+
+  if (default_expr->default_expr_regu_stream)
+    {
+      db_ws_free ((void *) default_expr->default_expr_regu_stream);
+    }
+
+  if (default_expr->default_expr_tree_stream)
+    {
+      db_ws_free ((void *) default_expr->default_expr_tree_stream);
+    }
+
+  classobj_initialize_default_expr (default_expr);
+}
+
+/*
  * classobj_copy_default_expr() - Copies default expression.
  *    return: error code
  *
@@ -8820,6 +8845,46 @@ classobj_copy_default_expr (DB_DEFAULT_EXPR * dest, const DB_DEFAULT_EXPR * src)
   else
     {
       dest->default_expr_text = NULL;
+    }
+
+  if (src->default_expr_regu_stream && src->default_expr_regu_stream_size > 0)
+    {
+      char *stream_copy = (char *) db_ws_alloc (src->default_expr_regu_stream_size);
+
+      if (stream_copy == NULL)
+	{
+	  er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_OUT_OF_VIRTUAL_MEMORY, 1,
+		  (size_t) src->default_expr_regu_stream_size);
+	  return ER_OUT_OF_VIRTUAL_MEMORY;
+	}
+      memcpy (stream_copy, src->default_expr_regu_stream, src->default_expr_regu_stream_size);
+      dest->default_expr_regu_stream = stream_copy;
+      dest->default_expr_regu_stream_size = src->default_expr_regu_stream_size;
+    }
+  else
+    {
+      dest->default_expr_regu_stream = NULL;
+      dest->default_expr_regu_stream_size = 0;
+    }
+
+  if (src->default_expr_tree_stream && src->default_expr_tree_stream_size > 0)
+    {
+      char *tree_copy = (char *) db_ws_alloc (src->default_expr_tree_stream_size);
+
+      if (tree_copy == NULL)
+	{
+	  er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_OUT_OF_VIRTUAL_MEMORY, 1,
+		  (size_t) src->default_expr_tree_stream_size);
+	  return ER_OUT_OF_VIRTUAL_MEMORY;
+	}
+      memcpy (tree_copy, src->default_expr_tree_stream, src->default_expr_tree_stream_size);
+      dest->default_expr_tree_stream = tree_copy;
+      dest->default_expr_tree_stream_size = src->default_expr_tree_stream_size;
+    }
+  else
+    {
+      dest->default_expr_tree_stream = NULL;
+      dest->default_expr_tree_stream_size = 0;
     }
 
   return NO_ERROR;

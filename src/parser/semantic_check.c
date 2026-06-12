@@ -4031,11 +4031,39 @@ pt_default_expr_normalized_text (PARSER_CONTEXT * parser, PT_NODE * node)
 
   if (fully_wrapped)
     {
-      return pt_append_string (parser, NULL, printed);
+      /* drop the printer's own parentheses; re-wrapped below after trimming */
+      char *stripped = pt_append_string (parser, NULL, printed + 1);
+
+      if (stripped == NULL)
+	{
+	  return NULL;
+	}
+      stripped[strlen (stripped) - 1] = '\0';
+      printed = stripped;
+      len = strlen (printed);
+    }
+
+  /* trim whitespace the printer leaves around some keywords (" unix_timestamp()") */
+  while (len > 0 && char_isspace (printed[0]))
+    {
+      printed++;
+      len--;
     }
 
   result = pt_append_string (parser, NULL, "(");
   result = pt_append_string (parser, result, printed);
+  while (result != NULL)
+    {
+      len = strlen (result);
+      if (len > 1 && char_isspace (result[len - 1]))
+	{
+	  result[len - 1] = '\0';
+	}
+      else
+	{
+	  break;
+	}
+    }
   result = pt_append_string (parser, result, ")");
   return result;
 }
@@ -4058,6 +4086,7 @@ pt_check_data_default (PARSER_CONTEXT * parser, PT_NODE * data_default_list)
   PT_NODE *prev;
   bool has_query;
   bool is_expr_derived;
+  bool is_stable_residual;
   char *edl_text;
 
   if (pt_has_error (parser))
@@ -4098,15 +4127,28 @@ pt_check_data_default (PARSER_CONTEXT * parser, PT_NODE * data_default_list)
        * folding, because pt_semantic_type folds an Immutable expression down to a
        * single literal value. */
       is_expr_derived = false;
+      is_stable_residual = false;
       edl_text = NULL;
       if (data_default->info.data_default.shared == PT_DEFAULT
 	  && data_default->info.data_default.default_expr_type == DB_DEFAULT_NONE
 	  && default_value != NULL
-	  && (PT_IS_EXPR_NODE (default_value) || default_value->node_type == PT_FUNCTION)
-	  && pt_get_expr_tree_volatility (parser, default_value) == PT_VOLATILITY_IMMUTABLE)
+	  && (PT_IS_EXPR_NODE (default_value) || default_value->node_type == PT_FUNCTION))
 	{
-	  is_expr_derived = true;
-	  edl_text = pt_default_expr_normalized_text (parser, default_value);
+	  PT_VOLATILITY vol = pt_get_expr_tree_volatility (parser, default_value);
+
+	  if (vol == PT_VOLATILITY_IMMUTABLE)
+	    {
+	      is_expr_derived = true;
+	      edl_text = pt_default_expr_normalized_text (parser, default_value);
+	    }
+	  else if (vol == PT_VOLATILITY_STABLE)
+	    {
+	      /* A STABLE residual: folding can only reduce IMMUTABLE subtrees, so
+	       * an expression survives and is stored (text + Compact DEFAULT Tree
+	       * + REGU stream) for once-per-statement evaluation. */
+	      is_stable_residual = true;
+	      edl_text = pt_default_expr_normalized_text (parser, default_value);
+	    }
 	}
 
       result = pt_semantic_type (parser, data_default, NULL);
@@ -4133,7 +4175,16 @@ pt_check_data_default (PARSER_CONTEXT * parser, PT_NODE * data_default_list)
 	      if (folded != NULL && folded->node_type == PT_VALUE)
 		{
 		  data_default->info.data_default.expr_text = edl_text;
+		  data_default->info.data_default.expr_volatility = PT_VOLATILITY_IMMUTABLE;
 		}
+	    }
+	  else if (is_stable_residual)
+	    {
+	      /* Only IMMUTABLE subtrees may have folded; the expression itself
+	       * survives.  Record text and volatility so DDL execution derives
+	       * the Stored DEFAULT Forms from it. */
+	      data_default->info.data_default.expr_text = edl_text;
+	      data_default->info.data_default.expr_volatility = PT_VOLATILITY_STABLE;
 	    }
 	}
       else
@@ -4144,7 +4195,7 @@ pt_check_data_default (PARSER_CONTEXT * parser, PT_NODE * data_default_list)
 
       node_ptr = NULL;
       (void) parser_walk_tree (parser, default_value, pt_find_default_expression, &node_ptr, NULL, NULL);
-      if (node_ptr != NULL && node_ptr != default_value)
+      if (node_ptr != NULL && node_ptr != default_value && !is_stable_residual)
 	{
 	  /* nested default expressions are not supported */
 	  PT_ERRORmf (parser, node_ptr, MSGCAT_SET_PARSER_SEMANTIC, MSGCAT_SEMANTIC_DEFAULT_NESTED_EXPR_NOT_ALLOWED,

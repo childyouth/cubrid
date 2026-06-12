@@ -10691,7 +10691,8 @@ pt_get_default_expression_from_data_default_node (PARSER_CONTEXT * parser, PT_NO
       default_expr->default_expr_text = data_default_node->info.data_default.expr_text;
 
       pt_default_expr = data_default_node->info.data_default.default_value;
-      if (pt_default_expr && pt_default_expr->node_type == PT_EXPR)
+      if (pt_default_expr && pt_default_expr->node_type == PT_EXPR
+	  && default_expr->default_expr_type != DB_DEFAULT_NONE)
 	{
 	  if (pt_default_expr->info.expr.op == PT_TO_CHAR)
 	    {
@@ -10707,6 +10708,406 @@ pt_get_default_expression_from_data_default_node (PARSER_CONTEXT * parser, PT_NO
 	    }
 	}
     }
+}
+
+/* Compact DEFAULT Tree: a minimal VALUE/OP expression IR persisted for a
+ * residual DEFAULT expression, rehydratable into a PT_NODE without re-parsing.
+ * Stream layout (all multi-byte fields via OR_BUF):
+ *   version(byte = PT_CDT_VERSION)  node
+ *   node := VALUE_TAG(int)  db_value(or_put_value, domain included)
+ *         | OP_TAG(int)     op(int)  qualifier(int)  result domain  arity(int)  node*arity
+ *         | FUNC_TAG(int)   fcode(int)  qualifier(int = 0)  result domain  arity(int)  node*arity
+ * A PT_FUNCTION_HOLDER wrapper is transparent: its held PT_FUNCTION is stored.
+ */
+#define PT_CDT_VERSION 1
+#define PT_CDT_TAG_VALUE 1
+#define PT_CDT_TAG_OP 2
+#define PT_CDT_TAG_FUNC 3
+
+/*
+ * pt_cdt_canonical_domain () - canonicalize a result domain before packing
+ *   return: the canonical (cached) domain
+ *   domain(in): result domain of an OP/FUNC node
+ *
+ * A floating precision (-1) on a varying type and the type's maximum
+ * precision are the same domain, but or_put_domain encodes them differently
+ * (or_get_domain always restores the maximum-precision built-in).  Pack the
+ * read-back canonical form so serialize(rehydrate(stream)) is byte-identical.
+ */
+static TP_DOMAIN *
+pt_cdt_canonical_domain (TP_DOMAIN * domain)
+{
+  int max_precision;
+
+  if (domain == NULL || domain->precision != TP_FLOATING_PRECISION_VALUE)
+    {
+      return domain;
+    }
+
+  switch (TP_DOMAIN_TYPE (domain))
+    {
+    case DB_TYPE_VARCHAR:
+      max_precision = DB_MAX_VARCHAR_PRECISION;
+      break;
+    case DB_TYPE_VARBIT:
+      max_precision = DB_MAX_VARBIT_PRECISION;
+      break;
+    default:
+      return domain;
+    }
+
+  TP_DOMAIN *canonical = tp_domain_copy (domain, false);
+
+  if (canonical == NULL)
+    {
+      return domain;
+    }
+  canonical->precision = max_precision;
+
+  return tp_domain_cache (canonical);
+}
+
+static int
+pt_cdt_put_node (PARSER_CONTEXT * parser, OR_BUF * buf, PT_NODE * node)
+{
+  int rc = NO_ERROR;
+  int arity, i;
+  PT_NODE *args[3] = { NULL, NULL, NULL };
+  PT_NODE *arg;
+  TP_DOMAIN *domain;
+
+  if (node == NULL)
+    {
+      return ER_FAILED;
+    }
+
+  switch (node->node_type)
+    {
+    case PT_VALUE:
+      {
+	DB_VALUE *db_value = pt_value_to_db (parser, node);
+
+	if (db_value == NULL)
+	  {
+	    return ER_FAILED;
+	  }
+	rc = or_put_int (buf, PT_CDT_TAG_VALUE);
+	if (rc == NO_ERROR)
+	  {
+	    rc = or_put_value (buf, db_value, 1, 1, 0);
+	  }
+	if (rc == NO_ERROR)
+	  {
+	    rc = or_put_align32 (buf);
+	  }
+	return rc;
+      }
+
+    case PT_EXPR:
+      if (node->info.expr.op == PT_FUNCTION_HOLDER)
+	{
+	  /* transparent wrapper of a PT_FUNCTION */
+	  return pt_cdt_put_node (parser, buf, node->info.expr.arg1);
+	}
+
+      rc = or_put_int (buf, PT_CDT_TAG_OP);
+      if (rc == NO_ERROR)
+	{
+	  rc = or_put_int (buf, (int) node->info.expr.op);
+	}
+      if (rc == NO_ERROR)
+	{
+	  rc = or_put_int (buf, (int) node->info.expr.qualifier);
+	}
+      if (rc == NO_ERROR)
+	{
+	  domain = pt_cdt_canonical_domain (pt_xasl_node_to_domain (parser, node));
+	  rc = or_put_domain (buf, domain, 0, (domain == NULL) ? 1 : 0);
+	}
+      if (rc == NO_ERROR)
+	{
+	  rc = or_put_align32 (buf);
+	}
+      if (rc != NO_ERROR)
+	{
+	  return rc;
+	}
+
+      args[0] = node->info.expr.arg1;
+      args[1] = node->info.expr.arg2;
+      args[2] = node->info.expr.arg3;
+      arity = (args[0] != NULL) + (args[1] != NULL) + (args[2] != NULL);
+
+      /* operand positions must form a prefix so they restore positionally */
+      if ((args[1] != NULL && args[0] == NULL) || (args[2] != NULL && args[1] == NULL))
+	{
+	  return ER_FAILED;
+	}
+
+      rc = or_put_int (buf, arity);
+      for (i = 0; i < arity && rc == NO_ERROR; i++)
+	{
+	  rc = pt_cdt_put_node (parser, buf, args[i]);
+	}
+      return rc;
+
+    case PT_FUNCTION:
+      rc = or_put_int (buf, PT_CDT_TAG_FUNC);
+      if (rc == NO_ERROR)
+	{
+	  rc = or_put_int (buf, (int) node->info.function.function_type);
+	}
+      if (rc == NO_ERROR)
+	{
+	  rc = or_put_int (buf, 0);
+	}
+      if (rc == NO_ERROR)
+	{
+	  domain = pt_cdt_canonical_domain (pt_xasl_node_to_domain (parser, node));
+	  rc = or_put_domain (buf, domain, 0, (domain == NULL) ? 1 : 0);
+	}
+      if (rc == NO_ERROR)
+	{
+	  rc = or_put_align32 (buf);
+	}
+      if (rc != NO_ERROR)
+	{
+	  return rc;
+	}
+
+      arity = 0;
+      for (arg = node->info.function.arg_list; arg != NULL; arg = arg->next)
+	{
+	  arity++;
+	}
+      rc = or_put_int (buf, arity);
+      for (arg = node->info.function.arg_list; arg != NULL && rc == NO_ERROR; arg = arg->next)
+	{
+	  rc = pt_cdt_put_node (parser, buf, arg);
+	}
+      return rc;
+
+    default:
+      /* admissibility leaves only VALUE/OP nodes in a DEFAULT expression */
+      return ER_FAILED;
+    }
+}
+
+/*
+ * pt_compact_default_tree_to_stream () - serializes a residual DEFAULT
+ *	expression into its Compact DEFAULT Tree stream
+ *   return: NO_ERROR or error code
+ *   parser(in): parser context
+ *   expr(in): the residual DEFAULT expression
+ *   stream(out): malloc'ed stream (caller frees)
+ *   stream_size(out): stream size in bytes
+ */
+int
+pt_compact_default_tree_to_stream (PARSER_CONTEXT * parser, PT_NODE * expr, char **stream, int *stream_size)
+{
+  size_t buf_size = 4096;
+  const size_t max_size = 1024 * 1024;
+  char *data = NULL;
+  OR_BUF buf;
+  int rc;
+
+  assert (parser != NULL && expr != NULL && stream != NULL && stream_size != NULL);
+
+  *stream = NULL;
+  *stream_size = 0;
+
+  /* the stream is small by design; grow geometrically on overflow */
+  for (; buf_size <= max_size; buf_size *= 2)
+    {
+      data = (char *) malloc (buf_size);
+      if (data == NULL)
+	{
+	  er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_OUT_OF_VIRTUAL_MEMORY, 1, buf_size);
+	  return ER_OUT_OF_VIRTUAL_MEMORY;
+	}
+
+      or_init (&buf, data, buf_size);
+      rc = or_put_byte (&buf, PT_CDT_VERSION);
+      if (rc == NO_ERROR)
+	{
+	  rc = or_put_align32 (&buf);
+	}
+      if (rc == NO_ERROR)
+	{
+	  rc = pt_cdt_put_node (parser, &buf, expr);
+	}
+
+      if (rc == NO_ERROR)
+	{
+	  *stream = data;
+	  *stream_size = CAST_BUFLEN (buf.ptr - buf.buffer);
+	  return NO_ERROR;
+	}
+
+      free_and_init (data);
+      if (rc != ER_TF_BUFFER_OVERFLOW)
+	{
+	  return rc;
+	}
+    }
+
+  return ER_TF_BUFFER_OVERFLOW;
+}
+
+static PT_NODE *
+pt_cdt_get_node (PARSER_CONTEXT * parser, OR_BUF * buf)
+{
+  int rc = NO_ERROR;
+  int tag, code, qualifier, arity, i;
+  int is_null = 0;
+  TP_DOMAIN *domain = NULL;
+  PT_NODE *node = NULL;
+  PT_NODE *args[3] = { NULL, NULL, NULL };
+
+  tag = or_get_int (buf, &rc);
+  if (rc != NO_ERROR)
+    {
+      return NULL;
+    }
+
+  if (tag == PT_CDT_TAG_VALUE)
+    {
+      DB_VALUE db_value;
+
+      db_make_null (&db_value);
+      if (or_get_value (buf, &db_value, NULL, -1, true) != NO_ERROR)
+	{
+	  return NULL;
+	}
+      if (or_get_align32 (buf) != NO_ERROR)
+	{
+	  pr_clear_value (&db_value);
+	  return NULL;
+	}
+      node = pt_dbval_to_value (parser, &db_value);
+      pr_clear_value (&db_value);
+      return node;
+    }
+
+  if (tag != PT_CDT_TAG_OP && tag != PT_CDT_TAG_FUNC)
+    {
+      return NULL;
+    }
+
+  code = or_get_int (buf, &rc);
+  if (rc == NO_ERROR)
+    {
+      qualifier = or_get_int (buf, &rc);
+    }
+  if (rc != NO_ERROR)
+    {
+      return NULL;
+    }
+
+  domain = or_get_domain (buf, NULL, &is_null);
+  if (!is_null && domain == NULL)
+    {
+      return NULL;
+    }
+  if (or_get_align32 (buf) != NO_ERROR)
+    {
+      return NULL;
+    }
+
+  arity = or_get_int (buf, &rc);
+  if (rc != NO_ERROR || arity < 0 || (tag == PT_CDT_TAG_OP && arity > 3))
+    {
+      return NULL;
+    }
+
+  if (tag == PT_CDT_TAG_OP)
+    {
+      for (i = 0; i < arity; i++)
+	{
+	  args[i] = pt_cdt_get_node (parser, buf);
+	  if (args[i] == NULL)
+	    {
+	      return NULL;
+	    }
+	}
+
+      node = parser_new_node (parser, PT_EXPR);
+      if (node == NULL)
+	{
+	  return NULL;
+	}
+      node->info.expr.op = (PT_OP_TYPE) code;
+      node->info.expr.qualifier = (PT_MISC_TYPE) qualifier;
+      node->info.expr.arg1 = args[0];
+      node->info.expr.arg2 = args[1];
+      node->info.expr.arg3 = args[2];
+    }
+  else
+    {
+      PT_NODE *arg_list = NULL, *last = NULL, *arg;
+
+      for (i = 0; i < arity; i++)
+	{
+	  arg = pt_cdt_get_node (parser, buf);
+	  if (arg == NULL)
+	    {
+	      return NULL;
+	    }
+	  if (last == NULL)
+	    {
+	      arg_list = last = arg;
+	    }
+	  else
+	    {
+	      last->next = arg;
+	      last = arg;
+	    }
+	}
+
+      node = parser_new_node (parser, PT_FUNCTION);
+      if (node == NULL)
+	{
+	  return NULL;
+	}
+      node->info.function.function_type = (FUNC_CODE) code;
+      node->info.function.arg_list = arg_list;
+    }
+
+  if (domain != NULL)
+    {
+      node->type_enum = pt_db_to_type_enum (TP_DOMAIN_TYPE (domain));
+      node->data_type = pt_domain_to_data_type (parser, domain);
+    }
+
+  return node;
+}
+
+/*
+ * pt_compact_default_tree_from_stream () - rehydrates a Compact DEFAULT Tree
+ *	stream into a PT_NODE expression (types set from the stored domains)
+ *   return: the rehydrated expression or NULL on failure
+ *   parser(in): parser context
+ *   stream(in): serialized Compact DEFAULT Tree
+ *   stream_size(in): stream size in bytes
+ */
+PT_NODE *
+pt_compact_default_tree_from_stream (PARSER_CONTEXT * parser, const char *stream, int stream_size)
+{
+  OR_BUF buf;
+  int rc = NO_ERROR;
+  int version;
+
+  assert (parser != NULL && stream != NULL && stream_size > 0);
+
+  or_init (&buf, CONST_CAST (char *, stream), stream_size);
+
+  version = or_get_byte (&buf, &rc);
+  if (rc != NO_ERROR || version != PT_CDT_VERSION || or_get_align32 (&buf) != NO_ERROR)
+    {
+      return NULL;
+    }
+
+  return pt_cdt_get_node (parser, &buf);
 }
 
 /*

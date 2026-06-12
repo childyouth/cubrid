@@ -3176,6 +3176,54 @@ disk_to_attribute (OR_BUF * buf, SM_ATTRIBUTE * att)
 		}
 	      pr_clear_value (&value);
 	    }
+
+	  /* residual DEFAULT: restore the serialized REGU form */
+	  if (classobj_get_prop (att->properties, "default_expr_regu", &value) > 0)
+	    {
+	      const char *stream = db_get_string (&value);
+	      int stream_size = db_get_string_size (&value);
+
+	      if (stream != NULL && stream_size > 0)
+		{
+		  char *stream_copy = (char *) db_ws_alloc (stream_size);
+
+		  if (stream_copy == NULL)
+		    {
+		      assert (er_errid () != NO_ERROR);
+		    }
+		  else
+		    {
+		      memcpy (stream_copy, stream, stream_size);
+		      att->default_value.default_expr.default_expr_regu_stream = stream_copy;
+		      att->default_value.default_expr.default_expr_regu_stream_size = stream_size;
+		    }
+		}
+	      pr_clear_value (&value);
+	    }
+
+	  /* residual DEFAULT: restore the Compact DEFAULT Tree */
+	  if (classobj_get_prop (att->properties, "default_expr_tree", &value) > 0)
+	    {
+	      const char *stream = db_get_string (&value);
+	      int stream_size = db_get_string_size (&value);
+
+	      if (stream != NULL && stream_size > 0)
+		{
+		  char *stream_copy = (char *) db_ws_alloc (stream_size);
+
+		  if (stream_copy == NULL)
+		    {
+		      assert (er_errid () != NO_ERROR);
+		    }
+		  else
+		    {
+		      memcpy (stream_copy, stream, stream_size);
+		      att->default_value.default_expr.default_expr_tree_stream = stream_copy;
+		      att->default_value.default_expr.default_expr_tree_stream_size = stream_size;
+		    }
+		}
+	      pr_clear_value (&value);
+	    }
 	}
 
       /* variable attribute 6: comment */
@@ -4751,6 +4799,55 @@ tf_attribute_default_expr_to_property (SM_ATTRIBUTE * attr_list)
 	{
 	  /* make sure property is unset for existing attributes */
 	  classobj_drop_prop (attr->properties, "default_expr_literal");
+	}
+
+      /* residual DEFAULT: persist the serialized REGU form for Server Evaluation
+       * (stored like a function-index expr_stream: a sized character value). */
+      if (default_expr->default_expr_regu_stream != NULL && default_expr->default_expr_regu_stream_size > 0)
+	{
+	  if (attr->properties == NULL)
+	    {
+	      attr->properties = classobj_make_prop ();
+	      if (attr->properties == NULL)
+		{
+		  er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_OUT_OF_VIRTUAL_MEMORY, sizeof (DB_SEQ));
+		  return er_errid ();
+		}
+	    }
+
+	  db_make_char (&default_expr_value, default_expr->default_expr_regu_stream_size,
+			default_expr->default_expr_regu_stream, default_expr->default_expr_regu_stream_size,
+			LANG_SYS_CODESET, LANG_SYS_COLLATION);
+	  classobj_put_prop (attr->properties, "default_expr_regu", &default_expr_value);
+	}
+      else if (attr->properties != NULL)
+	{
+	  /* make sure property is unset for existing attributes */
+	  classobj_drop_prop (attr->properties, "default_expr_regu");
+	}
+
+      /* residual DEFAULT: persist the Compact DEFAULT Tree for Local Evaluation */
+      if (default_expr->default_expr_tree_stream != NULL && default_expr->default_expr_tree_stream_size > 0)
+	{
+	  if (attr->properties == NULL)
+	    {
+	      attr->properties = classobj_make_prop ();
+	      if (attr->properties == NULL)
+		{
+		  er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_OUT_OF_VIRTUAL_MEMORY, sizeof (DB_SEQ));
+		  return er_errid ();
+		}
+	    }
+
+	  db_make_char (&default_expr_value, default_expr->default_expr_tree_stream_size,
+			default_expr->default_expr_tree_stream, default_expr->default_expr_tree_stream_size,
+			LANG_SYS_CODESET, LANG_SYS_COLLATION);
+	  classobj_put_prop (attr->properties, "default_expr_tree", &default_expr_value);
+	}
+      else if (attr->properties != NULL)
+	{
+	  /* make sure property is unset for existing attributes */
+	  classobj_drop_prop (attr->properties, "default_expr_tree");
 	}
 
       DB_DEFAULT_EXPR_TYPE update_default = attr->on_update_default_expr;

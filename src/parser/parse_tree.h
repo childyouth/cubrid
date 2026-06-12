@@ -2096,6 +2096,9 @@ struct pt_data_default_info
   PT_MISC_TYPE shared;		/* will PT_SHARED or PT_DEFAULT */
   DB_DEFAULT_EXPR_TYPE default_expr_type;	/* if it is a pseudocolumn, do not evaluate expr */
   char *expr_text;		/* normalized source text of an Expression-Derived Literal DEFAULT; NULL otherwise */
+  PT_VOLATILITY expr_volatility;	/* effective volatility of a DEFAULT expression on the new path:
+					 * IMMUTABLE for an Expression-Derived Literal, STABLE for a residual
+					 * expression that survives folding; UNSET otherwise */
 };
 
 /* Info for the AUTO_INCREMENT node */
