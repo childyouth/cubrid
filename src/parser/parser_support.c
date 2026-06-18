@@ -10821,6 +10821,12 @@ pt_cdt_put_node (PARSER_CONTEXT * parser, OR_BUF * buf, PT_NODE * node)
 	}
       if (rc == NO_ERROR)
 	{
+	  /* continued_case controls how some operators (e.g. PT_CONCAT/PT_CONCAT_WS) unparse;
+	   * preserve it so a rehydrated residual prints with its function name, not bare args */
+	  rc = or_put_int (buf, (int) node->info.expr.continued_case);
+	}
+      if (rc == NO_ERROR)
+	{
 	  domain = pt_cdt_canonical_domain (pt_xasl_node_to_domain (parser, node));
 	  rc = or_put_domain (buf, domain, 0, (domain == NULL) ? 1 : 0);
 	}
@@ -10859,7 +10865,11 @@ pt_cdt_put_node (PARSER_CONTEXT * parser, OR_BUF * buf, PT_NODE * node)
 	}
       if (rc == NO_ERROR)
 	{
-	  rc = or_put_int (buf, 0);
+	  rc = or_put_int (buf, 0);	/* qualifier slot (unused for functions) */
+	}
+      if (rc == NO_ERROR)
+	{
+	  rc = or_put_int (buf, 0);	/* continued_case slot (applies to OP nodes only) */
 	}
       if (rc == NO_ERROR)
 	{
@@ -10958,7 +10968,7 @@ static PT_NODE *
 pt_cdt_get_node (PARSER_CONTEXT * parser, OR_BUF * buf)
 {
   int rc = NO_ERROR;
-  int tag, code, qualifier, arity, i;
+  int tag, code, qualifier, continued_case = 0, arity, i;
   int is_null = 0;
   TP_DOMAIN *domain = NULL;
   PT_NODE *node = NULL;
@@ -10999,6 +11009,10 @@ pt_cdt_get_node (PARSER_CONTEXT * parser, OR_BUF * buf)
     {
       qualifier = or_get_int (buf, &rc);
     }
+  if (rc == NO_ERROR)
+    {
+      continued_case = or_get_int (buf, &rc);
+    }
   if (rc != NO_ERROR)
     {
       return NULL;
@@ -11038,6 +11052,7 @@ pt_cdt_get_node (PARSER_CONTEXT * parser, OR_BUF * buf)
 	}
       node->info.expr.op = (PT_OP_TYPE) code;
       node->info.expr.qualifier = (PT_MISC_TYPE) qualifier;
+      node->info.expr.continued_case = (short) continued_case;
       node->info.expr.arg1 = args[0];
       node->info.expr.arg2 = args[1];
       node->info.expr.arg3 = args[2];

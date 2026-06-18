@@ -21,6 +21,7 @@
  */
 
 #include "parse_tree.h"
+#include "pt_volatility.h"
 #ident "$Id$"
 
 #include "config.h"
@@ -4087,7 +4088,8 @@ pt_check_data_default (PARSER_CONTEXT * parser, PT_NODE * data_default_list)
   PT_NODE *prev;
   bool has_query;
   bool is_expr_derived;
-  bool is_stable_residual;
+  bool is_residual;
+  PT_VOLATILITY residual_vol;
   char *edl_text;
 
   if (pt_has_error (parser))
@@ -4128,7 +4130,8 @@ pt_check_data_default (PARSER_CONTEXT * parser, PT_NODE * data_default_list)
        * folding, because pt_semantic_type folds an Immutable expression down to a
        * single literal value. */
       is_expr_derived = false;
-      is_stable_residual = false;
+      is_residual = false;
+      residual_vol = PT_VOLATILITY_UNSET;
       edl_text = NULL;
       if (data_default->info.data_default.shared == PT_DEFAULT
 	  && data_default->info.data_default.default_expr_type == DB_DEFAULT_NONE
@@ -4142,12 +4145,14 @@ pt_check_data_default (PARSER_CONTEXT * parser, PT_NODE * data_default_list)
 	      is_expr_derived = true;
 	      edl_text = pt_default_expr_normalized_text (parser, default_value);
 	    }
-	  else if (vol == PT_VOLATILITY_STABLE)
+      
+	  else if (PT_VOLATILITY_IS_RESIDUAL(vol))
 	    {
-	      /* A STABLE residual: folding can only reduce IMMUTABLE subtrees, so
-	       * an expression survives and is stored (text + Compact DEFAULT Tree
-	       * + REGU stream) for once-per-statement evaluation. */
-	      is_stable_residual = true;
+	      /* A residual that survives folding (folding can only reduce IMMUTABLE
+	       * subtrees): stored as text + Compact DEFAULT Tree + REGU stream and
+	       * evaluated once per statement (STABLE) or once per row (VOLATILE). */
+	      is_residual = true;
+	      residual_vol = vol;
 	      edl_text = pt_default_expr_normalized_text (parser, default_value);
 	    }
 	  else if (vol == PT_VOLATILITY_UNSET)
@@ -4187,13 +4192,13 @@ pt_check_data_default (PARSER_CONTEXT * parser, PT_NODE * data_default_list)
 		  data_default->info.data_default.expr_volatility = PT_VOLATILITY_IMMUTABLE;
 		}
 	    }
-	  else if (is_stable_residual)
+	  else if (is_residual)
 	    {
 	      /* Only IMMUTABLE subtrees may have folded; the expression itself
-	       * survives.  Record text and volatility so DDL execution derives
-	       * the Stored DEFAULT Forms from it. */
+	       * survives.  Record text and effective volatility (STABLE or
+	       * VOLATILE) so DDL execution derives the Stored DEFAULT Forms. */
 	      data_default->info.data_default.expr_text = edl_text;
-	      data_default->info.data_default.expr_volatility = PT_VOLATILITY_STABLE;
+	      data_default->info.data_default.expr_volatility = residual_vol;
 	    }
 	}
       else
@@ -4204,7 +4209,7 @@ pt_check_data_default (PARSER_CONTEXT * parser, PT_NODE * data_default_list)
 
       node_ptr = NULL;
       (void) parser_walk_tree (parser, default_value, pt_find_default_expression, &node_ptr, NULL, NULL);
-      if (node_ptr != NULL && node_ptr != default_value && !is_stable_residual)
+      if (node_ptr != NULL && node_ptr != default_value && !is_residual)
 	{
 	  /* nested default expressions are not supported */
 	  PT_ERRORmf (parser, node_ptr, MSGCAT_SET_PARSER_SEMANTIC, MSGCAT_SEMANTIC_DEFAULT_NESTED_EXPR_NOT_ALLOWED,

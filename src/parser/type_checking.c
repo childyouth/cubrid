@@ -358,37 +358,42 @@ pt_get_expr_tree_volatility (PARSER_CONTEXT * parser, PT_NODE * node)
 	  return pt_get_expr_tree_volatility (parser, node->info.expr.arg1);
 	}
       v = pt_get_op_volatility (node->info.expr.op);
+      if (v == PT_VOLATILITY_UNSET)
+	{
+	  /* name the unclassified operator itself; a parent tainted only through
+	   * MAX-propagation keeps its own (set) volatility and does not re-report */
+	  PT_ERRORmf (parser, node, MSGCAT_SET_PARSER_SEMANTIC, MSGCAT_SEMANTIC_DEFAULT_UNCLASSIFIED_VOLATILITY,
+		      pt_show_binopcode (node->info.expr.op));
+	}
       v = pt_volatility_max (v, pt_get_expr_tree_volatility (parser, node->info.expr.arg1));
       v = pt_volatility_max (v, pt_get_expr_tree_volatility (parser, node->info.expr.arg2));
       v = pt_volatility_max (v, pt_get_expr_tree_volatility (parser, node->info.expr.arg3));
-      goto end;
+      return v;
 
     case PT_FUNCTION:
       {
 	PT_NODE *arg;
 
 	v = pt_get_func_volatility (node->info.function.function_type);
+	if (v == PT_VOLATILITY_UNSET)
+	  {
+	    PT_ERRORmf (parser, node, MSGCAT_SET_PARSER_SEMANTIC, MSGCAT_SEMANTIC_DEFAULT_UNCLASSIFIED_VOLATILITY,
+			fcode_get_lowercase_name (node->info.function.function_type));
+	  }
 	for (arg = node->info.function.arg_list; arg != NULL; arg = arg->next)
 	  {
 	    v = pt_volatility_max (v, pt_get_expr_tree_volatility (parser, arg));
 	  }
-    goto end;
+	return v;
       }
 
     default:
       /* names (column refs), host vars, sub-queries: not classified for DEFAULT
        * folding in this scope */
-      v = PT_VOLATILITY_UNSET;
-      goto end;
-    }
-
-end:
-    if (v == PT_VOLATILITY_UNSET){
-      PT_ERRORmf (parser, node, MSGCAT_SET_PARSER_SEMANTIC,
-		  MSGCAT_SEMANTIC_DEFAULT_UNCLASSIFIED_VOLATILITY,
+      PT_ERRORmf (parser, node, MSGCAT_SET_PARSER_SEMANTIC, MSGCAT_SEMANTIC_DEFAULT_UNCLASSIFIED_VOLATILITY,
 		  pt_show_node_type (node));
+      return PT_VOLATILITY_UNSET;
     }
-      return v;
 }
 
 /*
@@ -1460,12 +1465,26 @@ pt_get_expression_definition (const PT_OP_TYPE op, EXPRESSION_DEFINITION * def)
       def->overloads_count = num;
       break;
 
+    case PT_SYS_GUID:
+      num = 0;
+
+      /* row-determined: a fresh GUID on every evaluation */
+      sig.volatility = PT_VOLATILITY_VOLATILE;
+
+      /* one overload: no arguments, just a return type */
+      sig.return_type.type = pt_arg_type::NORMAL;
+      sig.return_type.val.type = PT_TYPE_VARCHAR;
+
+      def->overloads[num++] = sig;
+
+      def->overloads_count = num;
+      break;
+
     case PT_DATABASE:
     case PT_SCHEMA:
     case PT_VERSION:
     case PT_CURRENT_USER:
     case PT_LIST_DBS:
-    case PT_SYS_GUID:
     case PT_USER:
       num = 0;
 
@@ -1482,6 +1501,9 @@ pt_get_expression_definition (const PT_OP_TYPE op, EXPRESSION_DEFINITION * def)
 
     case PT_UUID:
       num = 0;
+
+      /* row-determined: a fresh UUID on every evaluation */
+      sig.volatility = PT_VOLATILITY_VOLATILE;
 
       /* first overload: UUID() -> BIT (defaults to UUID(4)) */
       sig.arg1_type.type = pt_arg_type::NORMAL;
@@ -2001,6 +2023,8 @@ pt_get_expression_definition (const PT_OP_TYPE op, EXPRESSION_DEFINITION * def)
 
     case PT_UUID_FORMAT:
       num = 0;
+
+      sig.volatility = PT_VOLATILITY_IMMUTABLE;
 
       /* UUID_FORMAT (STRING) */
       sig.arg1_type.type = pt_arg_type::GENERIC;

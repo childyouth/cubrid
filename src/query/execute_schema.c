@@ -8161,10 +8161,11 @@ do_add_attribute (PARSER_CONTEXT * parser, DB_CTMPL * ctemplate, PT_NODE * attri
   default_value = &stack_value;
 
   if (attribute->info.attr_def.data_default != NULL
-      && attribute->info.attr_def.data_default->info.data_default.expr_volatility == PT_VOLATILITY_STABLE)
+      && PT_VOLATILITY_IS_RESIDUAL (attribute->info.attr_def.data_default->info.data_default.expr_volatility))
     {
-      /* residual DEFAULT: compile the surviving expression to its serialized
-       * REGU form so the server can evaluate it once per INSERT statement */
+      /* residual DEFAULT (STABLE or VOLATILE): compile the surviving expression
+       * to its serialized REGU form so the server can evaluate it -- once per
+       * statement (STABLE) or once per row (VOLATILE, per the stamped flag) */
       PT_NODE *residual_expr = attribute->info.attr_def.data_default->info.data_default.default_value;
 
       error = pt_to_default_expr_stream (parser, residual_expr, &default_expr_stream, &default_expr_stream_size);
@@ -11629,11 +11630,11 @@ do_change_att_schema_only (PARSER_CONTEXT * parser, DB_CTMPL * ctemplate, PT_NOD
   pt_get_default_expression_from_data_default_node (parser, attribute->info.attr_def.data_default, &new_default_expr);
 
   if (attribute->info.attr_def.data_default != NULL
-      && attribute->info.attr_def.data_default->info.data_default.expr_volatility == PT_VOLATILITY_STABLE)
+      && PT_VOLATILITY_IS_RESIDUAL (attribute->info.attr_def.data_default->info.data_default.expr_volatility))
     {
-      /* residual DEFAULT: derive the Stored DEFAULT Forms here too, so a
-       * MODIFY/CHANGE'd DEFAULT keeps re-evaluating per statement instead of
-       * silently freezing to the DDL-time snapshot */
+      /* residual DEFAULT (STABLE or VOLATILE): derive the Stored DEFAULT Forms
+       * here too, so a MODIFY/CHANGE'd DEFAULT keeps re-evaluating (per
+       * statement / per row) instead of silently freezing to the DDL snapshot */
       PT_NODE *residual_expr = attribute->info.attr_def.data_default->info.data_default.default_value;
 
       error = pt_to_default_expr_stream (parser, residual_expr, &default_expr_stream, &default_expr_stream_size);
@@ -14013,7 +14014,7 @@ get_att_default_from_def (PARSER_CONTEXT * parser, PT_NODE * attribute, DB_VALUE
   DB_DEFAULT_EXPR_TYPE def_expr_type;
   PT_TYPE_ENUM desired_type = attribute->type_enum;
   bool has_self_ref = false;
-  bool is_stable_residual;
+  bool is_residual;
   const char *data_type_print;
 
   assert (attribute->node_type == PT_ATTR_DEF);
@@ -14025,9 +14026,8 @@ get_att_default_from_def (PARSER_CONTEXT * parser, PT_NODE * attribute, DB_VALUE
     }
 
   def_expr_type = attribute->info.attr_def.data_default->info.data_default.default_expr_type;
-  is_stable_residual = (def_expr_type == DB_DEFAULT_NONE
-			&& (attribute->info.attr_def.data_default->info.data_default.expr_volatility
-			    == PT_VOLATILITY_STABLE));
+  is_residual = (def_expr_type == DB_DEFAULT_NONE
+		 && PT_VOLATILITY_IS_RESIDUAL (attribute->info.attr_def.data_default->info.data_default.expr_volatility));
   def_val = attribute->info.attr_def.data_default->info.data_default.default_value;
   def_val = pt_semantic_check (parser, def_val);
   if (pt_has_error (parser) || def_val == NULL)
@@ -14111,7 +14111,7 @@ get_att_default_from_def (PARSER_CONTEXT * parser, PT_NODE * attribute, DB_VALUE
   else
     {
       /* try to coerce the default value into the attribute type */
-      if (def_expr_type == DB_DEFAULT_NONE && !is_stable_residual)
+      if (def_expr_type == DB_DEFAULT_NONE && !is_residual)
 	{
 	  error = pt_coerce_value_for_default_value (parser, def_val, def_val, desired_type, attribute->data_type,
 						     def_expr_type, true);
@@ -14120,12 +14120,16 @@ get_att_default_from_def (PARSER_CONTEXT * parser, PT_NODE * attribute, DB_VALUE
 	      goto exit_on_coerce_error;
 	    }
 	}
-      else if (is_stable_residual)
+      else if (is_residual)
 	{
-	  /* A STABLE residual DEFAULT expression: evaluate it exactly once at
-	   * DDL time.  The frozen value seeds value/original_value (what
-	   * unbound pre-existing rows read back); future INSERTs re-evaluate
-	   * the stored residual per statement. */
+	  /* A STABLE or VOLATILE residual DEFAULT expression: evaluate it once at
+	   * DDL time and coerce it to the attribute type, so an expression whose
+	   * result is incompatible with the column is rejected here -- as for
+	   * constant and STABLE defaults -- instead of being deferred to the first
+	   * INSERT.  The coerced value seeds value/original_value; future INSERTs
+	   * re-evaluate the stored residual -- once per statement (STABLE) or once
+	   * per row (VOLATILE) -- so for VOLATILE the frozen snapshot is only a
+	   * type-checked placeholder, never the live default (ADR-0004). */
 	  DB_VALUE src;
 	  PT_NODE *temp_val;
 
@@ -14208,7 +14212,7 @@ get_att_default_from_def (PARSER_CONTEXT * parser, PT_NODE * attribute, DB_VALUE
 	    }
 	}
 
-      if (def_expr_type == DB_DEFAULT_NONE && !is_stable_residual)
+      if (def_expr_type == DB_DEFAULT_NONE && !is_residual)
 	{
 	  pt_evaluate_tree (parser, def_val, *default_value, 1);
 	}
@@ -14511,10 +14515,20 @@ do_run_update_query_for_new_default_expression_fields (PARSER_CONTEXT * parser, 
       const char *sep = first ? "" : ", ";
       char *data_default;
 
-      data_default = parser_print_tree (parser, attr->info.attr_def.data_default->info.data_default.default_value);
-      if (data_default == NULL)
+      if (PT_VOLATILITY_IS_VOLATILE_RESIDUAL (attr->info.attr_def.data_default->info.data_default.expr_volatility))
 	{
-	  continue;
+	  /* VOLATILE residual: reference the column's own DEFAULT (PT_DEFAULTF) so
+	   * the residual is rehydrated with do_not_fold and evaluated once per
+	   * row, giving every pre-existing row a distinct value (ADR-0004). */
+	  data_default = (char *) "DEFAULT";
+	}
+      else
+	{
+	  data_default = parser_print_tree (parser, attr->info.attr_def.data_default->info.data_default.default_value);
+	  if (data_default == NULL)
+	    {
+	      continue;
+	    }
 	}
 
       n = snprintf (q, remaining, "%s[%s] = %s", sep, attr->info.attr_def.attr_name->info.name.original, data_default);
@@ -14726,13 +14740,14 @@ do_update_new_cols_with_default_expression (PARSER_CONTEXT * parser, PT_NODE * a
 	}
 
       pt_get_default_expression_from_data_default_node (parser, pt_data_default, &default_expr);
-      if (default_expr.default_expr_type == DB_DEFAULT_NONE)
+      if (default_expr.default_expr_type == DB_DEFAULT_NONE
+	  && !PT_VOLATILITY_IS_VOLATILE_RESIDUAL (pt_data_default->info.data_default.expr_volatility))
 	{
-	  /* No legacy default expression.  This also covers the new DEFAULT
-	   * path (constant, Expression-Derived Literal, or STABLE residual):
-	   * effective volatility <= STABLE fills existing rows instantly via
-	   * the frozen original_value -- no table rewrite (ADR-0004).  A
-	   * VOLATILE residual (slice 4) will require the eager rewrite here. */
+	  /* New DEFAULT path with effective volatility <= STABLE (constant,
+	   * Expression-Derived Literal, or STABLE residual): existing rows are
+	   * filled instantly via the frozen original_value -- no table rewrite
+	   * (ADR-0004).  A VOLATILE residual falls through to the eager rewrite
+	   * below, since a single frozen value cannot express "once per row". */
 	  continue;
 	}
 

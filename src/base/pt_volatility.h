@@ -38,9 +38,9 @@
 typedef enum
 {
   PT_VOLATILITY_UNSET = 0,	/* not classified (zero value, sentinel) */
-  PT_VOLATILITY_IMMUTABLE,	/* same input always yields same output, forever */
-  PT_VOLATILITY_STABLE,		/* constant within a single statement */
-  PT_VOLATILITY_VOLATILE	/* may differ on every evaluation */
+  PT_VOLATILITY_IMMUTABLE = 1,	/* same input always yields same output, forever */
+  PT_VOLATILITY_STABLE = 2,		/* constant within a single statement */
+  PT_VOLATILITY_VOLATILE = 3	/* may differ on every evaluation */
 } PT_VOLATILITY;
 
 /*
@@ -60,5 +60,15 @@ pt_volatility_max (PT_VOLATILITY a, PT_VOLATILITY b)
     }
   return (a > b) ? a : b;
 }
+
+/*
+ * A "residual" column DEFAULT is an expression that survived constant folding:
+ * its effective volatility is classified at or above STABLE (folding can only
+ * reduce IMMUTABLE subtrees).  Callers pair these with a
+ * default_expr_type == DB_DEFAULT_NONE check to exclude legacy pseudo-column
+ * defaults (SYSDATE, UUID(7), ...), which carry their own DB_DEFAULT_* enum.
+ */
+#define PT_VOLATILITY_IS_RESIDUAL(vol)          ((vol) >= PT_VOLATILITY_STABLE)
+#define PT_VOLATILITY_IS_VOLATILE_RESIDUAL(vol) ((vol) == PT_VOLATILITY_VOLATILE)
 
 #endif /* _PT_VOLATILITY_H_ */
