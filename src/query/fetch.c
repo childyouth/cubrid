@@ -3413,6 +3413,9 @@ fetch_peek_arith (THREAD_ENTRY * thread_p, REGU_VARIABLE * regu_var, val_descr *
 	   * call. */
 	  if (arithptr->opcode == T_RAND)
 	    {
+              /* rand(), drand() without argument is constant */
+	      REGU_VARIABLE_CLEAR_FLAG(regu_var, REGU_VARIABLE_FETCH_NOT_CONST);
+
 	      db_make_int (arithptr->value, (int) vd->lrand);
 	    }
 	  else
@@ -3474,6 +3477,9 @@ fetch_peek_arith (THREAD_ENTRY * thread_p, REGU_VARIABLE * regu_var, val_descr *
 	{
 	  if (arithptr->opcode == T_DRAND)
 	    {
+              /* rand(), drand() without argument is constant */
+	      REGU_VARIABLE_CLEAR_FLAG(regu_var, REGU_VARIABLE_FETCH_NOT_CONST);
+
 	      db_make_double (arithptr->value, (double) vd->drand);
 	    }
 	  else
@@ -3936,7 +3942,9 @@ fetch_peek_arith_end:
     case T_UUID:
       /* sleep() is not constant */
     case T_SLEEP:
-
+      if ((arithptr->opcode == T_RAND || arithptr->opcode == T_DRAND) && DB_IS_NULL(peek_right)){
+        break;
+      }
       assert (!REGU_VARIABLE_IS_FLAGED (regu_var, REGU_VARIABLE_FETCH_ALL_CONST));
       assert (REGU_VARIABLE_IS_FLAGED (regu_var, REGU_VARIABLE_FETCH_NOT_CONST));
       break;
