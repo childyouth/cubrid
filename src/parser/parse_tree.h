@@ -2455,6 +2455,8 @@ struct pt_insert_info
   int has_uniques;		/* class has unique constraints */
   SERVER_INSERT_ALLOWED server_allowed;	/* is insert allowed on server */
   unsigned execute_with_commit_allowed:1;	/* true, if execute with commit allowed. */
+  unsigned is_create_select:1;	/* true if generated for CREATE ... AS SELECT (every column is supplied by
+				 * the SELECT, so no per-statement DEFAULT evaluation is needed) */
 };
 
 /* Info for Transaction Isolation Level */

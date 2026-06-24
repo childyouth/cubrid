@@ -3960,8 +3960,7 @@ pt_make_attribute_default_value_node (PARSER_CONTEXT * parser, DB_ATTRIBUTE * at
   const DB_DEFAULT_EXPR *default_expr = &att->default_value.default_expr;
   PT_NODE *node;
 
-  if (default_expr->default_expr_type == DB_DEFAULT_NONE && default_expr->default_expr_tree_stream != NULL
-      && default_expr->default_expr_tree_stream_size > 0)
+  if (default_expr->default_expr_tree_stream != NULL && default_expr->default_expr_tree_stream_size > 0)
     {
       /* residual DEFAULT expression: rehydrate it so the reference evaluates at execution time; the
        * rehydrated nodes carry do_not_fold, keeping generic constant folding from freezing it */
@@ -3969,12 +3968,11 @@ pt_make_attribute_default_value_node (PARSER_CONTEXT * parser, DB_ATTRIBUTE * at
 						  default_expr->default_expr_tree_stream_size);
     }
 
-  if (default_expr->default_expr_type != DB_DEFAULT_NONE)
-    {
-      /* legacy expression default (also still used by ON UPDATE / SHARED) */
-      return pt_make_default_value_tree_from_default_expr (parser, default_expr);
-    }
-
+  /* CBRD-26878: a column DEFAULT no longer uses the legacy DB_DEFAULT_EXPR_TYPE enum
+   * (default_expr_type is always DB_DEFAULT_NONE here); an Expression-Derived Literal or a
+   * constant rebuilds from its stored value below.  The enum->PT reconstruction
+   * (pt_make_default_value_tree_from_default_expr) survives only for stored-procedure
+   * parameter defaults. */
   node = pt_dbval_to_value (parser, &att->default_value.value);
   if (node != NULL && TP_DOMAIN_TYPE (att->domain) == DB_TYPE_ENUMERATION)
     {

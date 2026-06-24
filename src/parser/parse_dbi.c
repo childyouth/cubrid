@@ -531,22 +531,24 @@ pt_sm_attribute_default_value_to_node (PARSER_CONTEXT * parser, const SM_ATTRIBU
       return NULL;
     }
 
-  if (default_value->default_expr.default_expr_type == DB_DEFAULT_NONE)
+  /* CBRD-26878: a column DEFAULT no longer uses the legacy DB_DEFAULT_EXPR_TYPE enum
+   * (default_expr_type is always DB_DEFAULT_NONE here).  A residual (STABLE/VOLATILE)
+   * DEFAULT keeps its expression in a Compact DEFAULT Tree: rehydrate it so an omitted
+   * column in INSERT ... SELECT into a view is re-evaluated by the projected expression
+   * instead of being frozen to its DDL-time value.  A plain literal / Expression-Derived
+   * Literal rebuilds from its stored value below.  (The enum->PT reconstruction survives
+   * only for stored-procedure parameter defaults.) */
+  if (default_value->default_expr.default_expr_tree_stream != NULL
+      && default_value->default_expr.default_expr_tree_stream_size > 0)
     {
-      result = pt_dbval_to_value (parser, &default_value->value);
-      if (result == NULL)
-	{
-	  return NULL;
-	}
+      return pt_compact_default_tree_from_stream (parser, default_value->default_expr.default_expr_tree_stream,
+						  default_value->default_expr.default_expr_tree_stream_size);
     }
-  else
+
+  result = pt_dbval_to_value (parser, &default_value->value);
+  if (result == NULL)
     {
-      result = pt_make_default_value_tree_from_default_expr (parser, &default_value->default_expr);
-      if (!result)
-	{
-	  PT_INTERNAL_ERROR (parser, "allocate new node");
-	  return NULL;
-	}
+      return NULL;
     }
 
   data_type = parser_new_node (parser, PT_DATA_TYPE);

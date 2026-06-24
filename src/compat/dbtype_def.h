@@ -1297,9 +1297,17 @@ extern "C"
   typedef struct db_default_expr DB_DEFAULT_EXPR;
   struct db_default_expr
   {
-    DB_DEFAULT_EXPR_TYPE default_expr_type;	/* default expression identifier */
-    int default_expr_op;	/* default expression operator */
-    const char *default_expr_format;	/* default expression format */
+    /* CBRD-26878: the three legacy-enum fields below (type/op/format) are NO LONGER
+     * used for a column DEFAULT -- a column DEFAULT is fully described by the new
+     * fields (default_expr_text + the residual REGU/tree streams; the folded value
+     * lives in SM_DEFAULT_VALUE.value).  The legacy enum survives only as an in-memory
+     * carrier for ON UPDATE / SHARED / stored-procedure parameter defaults and the
+     * Default-Reference / inherited-default reconstruction (enum -> PT); it is no
+     * longer serialized to the catalog.  Do NOT add column-DEFAULT logic that branches
+     * on these for a column attribute -- they are always NONE/NULL there. */
+    DB_DEFAULT_EXPR_TYPE default_expr_type;	/* legacy default expression identifier (see note above) */
+    int default_expr_op;	/* legacy default expression operator (T_TO_CHAR) */
+    const char *default_expr_format;	/* legacy default expression (TO_CHAR) format */
     const char *default_expr_text;	/* original text of an Expression-Derived Literal DEFAULT; NULL otherwise */
     const char *default_expr_regu_stream;	/* serialized REGU form (FUNC_PRED stream) of a residual DEFAULT
 						 * expression for Server Evaluation; NULL otherwise */

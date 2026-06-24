@@ -1987,6 +1987,7 @@ $set 8 MSGCAT_SET_PARSER_SEMANTIC
 
 337 DEFAULT UUID는 UUID(), UUID(4), 또는 UUID(7)만 지원합니다.
 338 유효하지 않은 DEFAULT 절: '%1$s'의 volatility(휘발성) 속성이 분류되지 않았습니다.
+339 유효하지 않은 DEFAULT 절: 괄호 없는 식은 레거시 기본값 함수에만 허용됩니다. 식을 괄호로 감싸십시오. 예: DEFAULT (...).
 
 
 

@@ -4071,6 +4071,42 @@ pt_default_expr_normalized_text (PARSER_CONTEXT * parser, PT_NODE * node)
 }
 
 /*
+ * pt_is_bare_legacy_default_op () - whether an operator may appear as a
+ *	non-parenthesized (bare) column DEFAULT for backward compatibility.
+ *   return: true if the op is one of the historical legacy whitelist
+ *	pseudo-columns/functions (the DB_DEFAULT_EXPR_TYPE set); false otherwise
+ *   op(in): the top-level PT_OP_TYPE of the bare DEFAULT expression
+ *
+ * A bare DEFAULT is pure syntactic sugar kept only for these legacy forms (and
+ * plain literals); every other expression must be parenthesized -- "DEFAULT
+ * (expr)".  TO_CHAR is included for the legacy "TO_CHAR(<datetime fn>)" form.
+ */
+static bool
+pt_is_bare_legacy_default_op (PT_OP_TYPE op)
+{
+  switch (op)
+    {
+    case PT_SYS_DATE:
+    case PT_SYS_TIME:
+    case PT_SYS_DATETIME:
+    case PT_SYS_TIMESTAMP:
+    case PT_CURRENT_DATE:
+    case PT_CURRENT_TIME:
+    case PT_CURRENT_DATETIME:
+    case PT_CURRENT_TIMESTAMP:
+    case PT_UNIX_TIMESTAMP:
+    case PT_USER:
+    case PT_CURRENT_USER:
+    case PT_UUID:
+    case PT_SYS_GUID:
+    case PT_TO_CHAR:
+      return true;
+    default:
+      return false;
+    }
+}
+
+/*
  * pt_check_data_default () - checks data_default for semantic errors
  *
  * result	    	 : modified data_default
@@ -4119,6 +4155,23 @@ pt_check_data_default (PARSER_CONTEXT * parser, PT_NODE * data_default_list)
 	  PT_ERRORm (parser, default_value, MSGCAT_SET_PARSER_SEMANTIC,
 		     MSGCAT_SEMANTIC_SUBQUERY_NOT_ALLOWED_IN_DEFAULT_CLAUSE);
 	  /* skip other checks */
+	  goto end;
+	}
+
+      /* Bare Legacy Default: a non-parenthesized DEFAULT expression is allowed
+       * only for the historical legacy whitelist functions (and plain
+       * literals); any other expression must be wrapped in parentheses.  The
+       * parser sets paren_type on a parenthesized expression, so it
+       * distinguishes "DEFAULT (UNIX_TIMESTAMP() + 2)" (allowed, general path)
+       * from "DEFAULT UNIX_TIMESTAMP() + 2" (rejected here).  Only PT_DEFAULT
+       * is gated; SHARED keeps the legacy enum path. */
+      if (data_default->info.data_default.shared == PT_DEFAULT
+	  && default_value != NULL
+	  && PT_IS_EXPR_NODE (default_value)
+	  && default_value->info.expr.paren_type == 0
+	  && !pt_is_bare_legacy_default_op (default_value->info.expr.op))
+	{
+	  PT_ERRORm (parser, default_value, MSGCAT_SET_PARSER_SEMANTIC, MSGCAT_SEMANTIC_DEFAULT_REQUIRES_PARENS);
 	  goto end;
 	}
 
@@ -8118,57 +8171,58 @@ pt_check_default_vclass_query_spec (PARSER_CONTEXT * parser, PT_NODE * qry, PT_N
 
       if (attr->info.attr_def.data_default == NULL)
 	{
-	  if (DB_IS_NULL (&col_attr->default_value.value)
-	      && (col_attr->default_value.default_expr.default_expr_type == DB_DEFAULT_NONE))
-	    {
-	      /* don't create any default node if default value is null unless default expression type is not
-	       * DB_DEFAULT_NONE */
-	      continue;
-	    }
+	  const DB_DEFAULT_EXPR *col_def_expr = &col_attr->default_value.default_expr;
 
-	  if (col_attr->default_value.default_expr.default_expr_type == DB_DEFAULT_NONE)
+	  /* CBRD-26878: a column DEFAULT no longer carries the legacy DB_DEFAULT_EXPR_TYPE
+	   * enum (default_expr_type is always DB_DEFAULT_NONE).  A residual (STABLE/VOLATILE)
+	   * DEFAULT keeps its expression in a Compact DEFAULT Tree stream: rehydrate it so the
+	   * view inherits the re-evaluatable expression instead of a frozen DDL-time constant.
+	   * Otherwise (plain literal or Expression-Derived Literal) a NULL stored value means
+	   * there is nothing to inherit; a non-NULL value is rebuilt as a literal.  pt_check_data_default,
+	   * run next over the create-view attribute list, re-derives the Stored DEFAULT Forms from the
+	   * expression exactly as for an explicit view DEFAULT.  (The enum->PT reconstruction survives
+	   * only for stored-procedure parameter defaults.) */
+	  if (col_def_expr->default_expr_tree_stream != NULL && col_def_expr->default_expr_tree_stream_size > 0)
 	    {
+	      default_value = pt_compact_default_tree_from_stream (parser, col_def_expr->default_expr_tree_stream,
+								  col_def_expr->default_expr_tree_stream_size);
+	      if (default_value == NULL)
+		{
+		  PT_ERRORm (parser, qry, MSGCAT_SET_PARSER_SEMANTIC, MSGCAT_SEMANTIC_OUT_OF_MEMORY);
+		  goto error;
+		}
+	      if (PT_IS_EXPR_NODE (default_value))
+		{
+		  /* the stored DEFAULT text is normalized with parentheses; mark the rehydrated root so the
+		   * bare-legacy parenthesis check in pt_check_data_default accepts the inherited expression */
+		  default_value->info.expr.paren_type = 1;
+		}
+	    }
+	  else
+	    {
+	      if (DB_IS_NULL (&col_attr->default_value.value))
+		{
+		  continue;
+		}
+
 	      default_value = pt_dbval_to_value (parser, &col_attr->default_value.value);
 	      if (default_value == NULL)
 		{
 		  PT_ERRORm (parser, qry, MSGCAT_SET_PARSER_SEMANTIC, MSGCAT_SEMANTIC_OUT_OF_MEMORY);
 		  goto error;
 		}
-
-	      default_data = parser_new_node (parser, PT_DATA_DEFAULT);
-	      if (default_data == NULL)
-		{
-		  parser_free_tree (parser, default_value);
-		  PT_ERRORm (parser, qry, MSGCAT_SET_PARSER_SEMANTIC, MSGCAT_SEMANTIC_OUT_OF_MEMORY);
-		  goto error;
-		}
-	      default_data->info.data_default.default_value = default_value;
-	      default_data->info.data_default.shared = PT_DEFAULT;
-	      default_data->info.data_default.default_expr_type = DB_DEFAULT_NONE;
 	    }
-	  else
+
+	  default_data = parser_new_node (parser, PT_DATA_DEFAULT);
+	  if (default_data == NULL)
 	    {
-	      default_value =
-		pt_make_default_value_tree_from_default_expr (parser, &col_attr->default_value.default_expr);
-	      if (default_value == NULL)
-		{
-		  PT_ERRORm (parser, qry, MSGCAT_SET_PARSER_SEMANTIC, MSGCAT_SEMANTIC_OUT_OF_MEMORY);
-		  goto error;
-		}
-
-	      default_data = parser_new_node (parser, PT_DATA_DEFAULT);
-	      if (default_data == NULL)
-		{
-		  parser_free_tree (parser, default_value);
-		  PT_ERRORm (parser, qry, MSGCAT_SET_PARSER_SEMANTIC, MSGCAT_SEMANTIC_OUT_OF_MEMORY);
-		  goto error;
-		}
-
-	      default_data->info.data_default.default_value = default_value;
-	      default_data->info.data_default.shared = PT_DEFAULT;
-	      default_data->info.data_default.default_expr_type =
-		col_attr->default_value.default_expr.default_expr_type;
+	      parser_free_tree (parser, default_value);
+	      PT_ERRORm (parser, qry, MSGCAT_SET_PARSER_SEMANTIC, MSGCAT_SEMANTIC_OUT_OF_MEMORY);
+	      goto error;
 	    }
+	  default_data->info.data_default.default_value = default_value;
+	  default_data->info.data_default.shared = PT_DEFAULT;
+	  default_data->info.data_default.default_expr_type = DB_DEFAULT_NONE;
 
 	  attr->info.attr_def.data_default = default_data;
 	}

@@ -9586,6 +9586,12 @@ create_select_to_insert_into (PARSER_CONTEXT * parser, const char *class_name, P
       goto error_exit;
     }
 
+  /* Every column of the new table is supplied by the SELECT below, so no column is ever filled from its
+   * DEFAULT.  Mark the statement so insert_local skips the per-statement residual DEFAULT evaluation, which
+   * would otherwise evaluate (and, for a date/time residual on the unsynchronized clock, crash on) a value
+   * that is immediately discarded. */
+  ins->info.insert.is_create_select = true;
+
   if (create_select_action == PT_CREATE_SELECT_REPLACE)
     {
       ins->info.insert.do_replace = true;

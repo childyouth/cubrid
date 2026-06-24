@@ -1488,6 +1488,10 @@ pt_get_expression_definition (const PT_OP_TYPE op, EXPRESSION_DEFINITION * def)
     case PT_USER:
       num = 0;
 
+      /* session/environment dependent: constant within a statement, differs
+       * across connections -- not foldable to a DDL-time literal */
+      sig.volatility = PT_VOLATILITY_STABLE;
+
       /* one overload */
 
       /* no arguments, just a return type */
@@ -3640,6 +3644,11 @@ pt_get_expression_definition (const PT_OP_TYPE op, EXPRESSION_DEFINITION * def)
 
     case PT_TO_CHAR:
       num = 0;
+
+      /* NLS/format-environment dependent: classify STABLE so it is admissible
+       * in a DEFAULT and re-evaluated rather than folded to a DDL-time literal.
+       * Combined via MAX with its argument, TO_CHAR(<datetime fn>) stays STABLE. */
+      sig.volatility = PT_VOLATILITY_STABLE;
 
       /* four overloads */
 

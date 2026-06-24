@@ -1988,6 +1988,7 @@ $set 8 MSGCAT_SET_PARSER_SEMANTIC
 
 337 DEFAULT UUID only supports UUID(), UUID(4), or UUID(7).
 338 Invalid DEFAULT clause: '%1$s' has unclassified volatility.
+339 Invalid DEFAULT clause: a bare expression is only allowed for legacy default functions; wrap the expression in parentheses, e.g. DEFAULT (...).
 
 
 
